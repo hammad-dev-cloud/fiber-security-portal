@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
 
+    # NEW — Frontend URL for emails (password reset link, approved email button, etc.)
+    # In production this should be your deployed frontend URL (e.g., https://fiber-portal.vercel.app)
+    FRONTEND_URL: str = "http://localhost:5173"
+
     # Email
     MAIL_USERNAME: str = ""
     MAIL_PASSWORD: str = ""

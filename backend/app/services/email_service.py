@@ -1,17 +1,4 @@
-"""Email notification service — uses fastapi-mail (SMTP).
-
-Supports:
-  • Package expiry reminder
-  • Intrusion / security alert
-  • Router disconnection notice
-  • Payment receipt (with PDF attachment)
-  • Password reset link
-  • Username reminder
-  • Signup workflow (received / approved / rejected)
-
-Failures are swallowed and printed so they never break the API request.
-Configure SMTP in `.env`.
-"""
+"""Email notification service — uses fastapi-mail (SMTP)."""
 
 import os
 import tempfile
@@ -40,23 +27,15 @@ def _build_config() -> Optional[ConnectionConfig]:
     )
 
 
-async def send_email(
-    recipients: List[EmailStr],
-    subject: str,
-    html_body: str,
-    attachments: Optional[List[dict]] = None,
-) -> bool:
+async def send_email(recipients, subject, html_body, attachments=None):
     config = _build_config()
     if not config:
         print(f"[email] SMTP not configured — would have sent to {recipients}: {subject}")
         return False
     try:
         message = MessageSchema(
-            subject     = subject,
-            recipients  = recipients,
-            body        = html_body,
-            subtype     = MessageType.html,
-            attachments = attachments or [],
+            subject = subject, recipients = recipients, body = html_body,
+            subtype = MessageType.html, attachments = attachments or [],
         )
         await FastMail(config).send_message(message)
         print(f"[email] sent to {recipients}: {subject}")
@@ -66,22 +45,11 @@ async def send_email(
         return False
 
 
-# ---------------------------------------------------------------------
-# Template helpers
-# ---------------------------------------------------------------------
-_BASE_CSS = """
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  background: #f4f6fa; padding: 32px;
-"""
-
-_CARD_CSS = """
-  max-width: 560px; margin: 0 auto; background: #ffffff;
-  border-radius: 14px; padding: 32px; border: 1px solid #e5e7eb;
-  box-shadow: 0 6px 24px rgba(15,23,42,0.05);
-"""
+_BASE_CSS = "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f6fa; padding: 32px;"
+_CARD_CSS = "max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 14px; padding: 32px; border: 1px solid #e5e7eb; box-shadow: 0 6px 24px rgba(15,23,42,0.05);"
 
 
-def _wrap(title: str, body_html: str, accent: str = "#0ea5e9") -> str:
+def _wrap(title, body_html, accent="#0ea5e9"):
     return f"""
     <div style="{_BASE_CSS}">
       <div style="{_CARD_CSS}">
@@ -99,9 +67,9 @@ def _wrap(title: str, body_html: str, accent: str = "#0ea5e9") -> str:
 
 
 # =====================================================================
-# Existing email senders
+# Standard notifications
 # =====================================================================
-async def send_package_expiry_notice(to: EmailStr, customer_name: str, days_left: int) -> bool:
+async def send_package_expiry_notice(to, customer_name, days_left):
     body = f"""
       <p>Dear <strong>{customer_name}</strong>,</p>
       <p>This is a formal reminder that your internet subscription is scheduled to expire in <strong>{days_left} day(s)</strong>.</p>
@@ -111,7 +79,7 @@ async def send_package_expiry_notice(to: EmailStr, customer_name: str, days_left
     return await send_email([to], "Your fiber package is expiring soon", _wrap("Package Expiry Reminder", body, "#f59e0b"))
 
 
-async def send_security_alert(to: EmailStr, alert_type: str, message: str, severity: str = "medium") -> bool:
+async def send_security_alert(to, alert_type, message, severity="medium"):
     accent = {"critical": "#dc2626", "high": "#ef4444", "medium": "#f59e0b", "low": "#0ea5e9"}.get(severity, "#0ea5e9")
     body = f"""
       <p><strong>Alert type:</strong> {alert_type}</p>
@@ -122,7 +90,7 @@ async def send_security_alert(to: EmailStr, alert_type: str, message: str, sever
     return await send_email([to], f"[{severity.upper()}] Security alert — {alert_type}", _wrap("Security Alert", body, accent))
 
 
-async def send_router_offline_notice(to: EmailStr, router_name: str, customer_name: str) -> bool:
+async def send_router_offline_notice(to, router_name, customer_name):
     body = f"""
       <p>The router <strong>{router_name}</strong> linked to customer <strong>{customer_name}</strong> has been offline for an extended period.</p>
       <p>The on-call engineer should verify the customer's connection.</p>
@@ -130,15 +98,7 @@ async def send_router_offline_notice(to: EmailStr, router_name: str, customer_na
     return await send_email([to], f"Router offline — {router_name}", _wrap("Router Disconnection Notice", body, "#ef4444"))
 
 
-async def send_payment_receipt(
-    to: EmailStr,
-    customer_name: str,
-    amount_pkr: float,
-    package_name: str,
-    period_end: str,
-    pdf_bytes: bytes,
-    invoice_number: str,
-) -> bool:
+async def send_payment_receipt(to, customer_name, amount_pkr, package_name, period_end, pdf_bytes, invoice_number):
     amount_str = f"Rs. {float(amount_pkr or 0):,.0f}"
     body = f"""
       <p>Dear <strong>{customer_name}</strong>,</p>
@@ -166,32 +126,23 @@ async def send_payment_receipt(
 
     tmp = tempfile.NamedTemporaryFile(prefix=f"{invoice_number}_", suffix=".pdf", delete=False)
     try:
-        tmp.write(pdf_bytes)
-        tmp.close()
+        tmp.write(pdf_bytes); tmp.close()
         attachments = [{
             "file": tmp.name,
-            "headers": {
-                "Content-ID": "<receipt>",
-                "Content-Disposition": f'attachment; filename="{invoice_number}.pdf"',
-            },
-            "mime_type":    "application",
-            "mime_subtype": "pdf",
+            "headers": {"Content-ID": "<receipt>", "Content-Disposition": f'attachment; filename="{invoice_number}.pdf"'},
+            "mime_type": "application", "mime_subtype": "pdf",
         }]
-        return await send_email(
-            recipients = [to],
-            subject    = f"Payment Receipt — {invoice_number}",
-            html_body  = _wrap("Payment Received — Thank You", body, "#059669"),
-            attachments = attachments,
-        )
+        return await send_email([to], f"Payment Receipt — {invoice_number}",
+                                 _wrap("Payment Received — Thank You", body, "#059669"), attachments=attachments)
     finally:
         try: os.unlink(tmp.name)
         except Exception: pass
 
 
 # =====================================================================
-# NEW — Password reset
+# Password reset
 # =====================================================================
-async def send_password_reset_email(to: EmailStr, full_name: str, reset_url: str) -> bool:
+async def send_password_reset_email(to, full_name, reset_url):
     body = f"""
       <p>Dear <strong>{full_name}</strong>,</p>
       <p>We received a request to reset the password for your Fiber Security Portal account.</p>
@@ -214,7 +165,7 @@ async def send_password_reset_email(to: EmailStr, full_name: str, reset_url: str
     return await send_email([to], "Reset your password — Fiber Security Portal", _wrap("Password Reset Request", body, "#0ea5e9"))
 
 
-async def send_username_reminder_email(to: EmailStr, full_name: str, username: str) -> bool:
+async def send_username_reminder_email(to, full_name, username):
     body = f"""
       <p>Dear <strong>{full_name}</strong>,</p>
       <p>You recently requested a reminder of your username for the Fiber Security Portal.</p>
@@ -231,9 +182,9 @@ async def send_username_reminder_email(to: EmailStr, full_name: str, username: s
 
 
 # =====================================================================
-# NEW — Signup workflow emails
+# Signup workflow
 # =====================================================================
-async def send_signup_received_email(to: EmailStr, full_name: str) -> bool:
+async def send_signup_received_email(to, full_name):
     body = f"""
       <p>Dear <strong>{full_name}</strong>,</p>
       <p>Thank you for signing up for the Fiber Security Portal.</p>
@@ -245,13 +196,15 @@ async def send_signup_received_email(to: EmailStr, full_name: str) -> bool:
     return await send_email([to], "Signup received — pending approval", _wrap("Signup Application Received", body, "#0ea5e9"))
 
 
-async def send_signup_approved_email(to: EmailStr, full_name: str) -> bool:
+async def send_signup_approved_email(to, full_name):
+    # NEW — uses FRONTEND_URL setting (production-aware)
+    login_url = f"{settings.FRONTEND_URL.rstrip('/')}/login"
     body = f"""
       <p>Dear <strong>{full_name}</strong>,</p>
       <p>Excellent news — your Fiber Security Portal account has been <strong>approved</strong> by an administrator.</p>
       <p>You can now sign in using the credentials you provided during signup.</p>
       <div style="text-align:center; margin: 24px 0;">
-        <a href="http://localhost:5173/login"
+        <a href="{login_url}"
            style="display:inline-block; background:#10b981; color:#ffffff; padding:12px 28px;
                   text-decoration:none; border-radius:10px; font-weight:600; font-size:14px;">
           Sign In to Portal
@@ -262,7 +215,7 @@ async def send_signup_approved_email(to: EmailStr, full_name: str) -> bool:
     return await send_email([to], "Your account has been approved!", _wrap("Account Approved", body, "#10b981"))
 
 
-async def send_signup_rejected_email(to: EmailStr, full_name: str) -> bool:
+async def send_signup_rejected_email(to, full_name):
     body = f"""
       <p>Dear <strong>{full_name}</strong>,</p>
       <p>Thank you for your interest in the Fiber Security Portal.</p>

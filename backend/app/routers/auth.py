@@ -115,20 +115,12 @@ async def login(payload: LoginRequest, request: Request):
 # =====================================================================
 @router.post("/signup", status_code=201)
 async def signup(payload: SignupRequest, background_tasks: BackgroundTasks):
-    """
-    Public signup — anyone can apply for a portal account.
-    Account is created in 'pending' state and an email is sent to the user.
-    An admin must approve the signup before the user can log in.
-    """
-    # Check duplicates
     existing = supabase.table("admin_users").select("id, username, email").or_(
         f"username.eq.{payload.username},email.eq.{payload.email}"
     ).execute().data
     if existing:
-        # Don't reveal whether it's username or email collision
         raise HTTPException(status_code=409, detail="An account with this username or email already exists")
 
-    # Create the pending account
     new_row = supabase.table("admin_users").insert({
         "username":      payload.username,
         "email":         payload.email,
@@ -140,10 +132,8 @@ async def signup(payload: SignupRequest, background_tasks: BackgroundTasks):
         "is_pending":    True,
     }).execute().data[0]
 
-    # Email applicant confirmation + alert admins via in-app alert
     background_tasks.add_task(send_signup_received_email, payload.email, payload.full_name)
 
-    # Generate an in-app security alert so admins see it on dashboard
     try:
         supabase.table("security_alerts").insert({
             "alert_type": "signup_pending",
@@ -166,7 +156,6 @@ async def signup(payload: SignupRequest, background_tasks: BackgroundTasks):
 # =====================================================================
 @router.get("/pending-signups", response_model=list[UserOut])
 async def list_pending_signups(_: dict = Depends(require_role("admin"))):
-    """Get all pending signup requests. Admin only."""
     rows = (
         supabase.table("admin_users")
         .select("*")
@@ -186,7 +175,6 @@ async def decide_signup(
     background_tasks: BackgroundTasks,
     current: dict = Depends(require_role("admin")),
 ):
-    """Approve or reject a pending signup. Admin only."""
     rows = supabase.table("admin_users").select("*").eq("id", user_id).execute().data or []
     if not rows:
         raise HTTPException(status_code=404, detail="User not found")
@@ -196,12 +184,10 @@ async def decide_signup(
         raise HTTPException(status_code=400, detail="This user is not pending approval")
 
     if payload.approve:
-        # Approve: clear is_pending
         supabase.table("admin_users").update({"is_pending": False}).eq("id", user_id).execute()
         background_tasks.add_task(send_signup_approved_email, user["email"], user.get("full_name") or user["username"])
         return {"status": "approved", "user_id": user_id}
     else:
-        # Reject: delete the account
         supabase.table("admin_users").delete().eq("id", user_id).execute()
         background_tasks.add_task(send_signup_rejected_email, user["email"], user.get("full_name") or user["username"])
         return {"status": "rejected", "user_id": user_id}
@@ -212,7 +198,6 @@ async def decide_signup(
 # =====================================================================
 @router.post("/register", response_model=UserOut, status_code=201)
 async def register(payload: RegisterRequest, _: dict = Depends(require_role("admin"))):
-    """Create a new admin/viewer account directly. Admin-only."""
     existing = supabase.table("admin_users").select("id").or_(
         f"username.eq.{payload.username},email.eq.{payload.email}"
     ).execute().data
@@ -237,7 +222,6 @@ async def register(payload: RegisterRequest, _: dict = Depends(require_role("adm
 # =====================================================================
 @router.get("/me", response_model=UserOut)
 async def me(user: dict = Depends(get_current_user)):
-    """Return the currently logged-in user (fresh from DB)."""
     rows = supabase.table("admin_users").select("*").eq("id", user["id"]).execute().data or []
     if not rows:
         raise HTTPException(status_code=404, detail="User not found")
@@ -246,12 +230,10 @@ async def me(user: dict = Depends(get_current_user)):
 
 @router.put("/me", response_model=UserOut)
 async def update_my_profile(payload: UpdateProfileRequest, user: dict = Depends(get_current_user)):
-    """Update own profile (username, email, full_name, phone)."""
     update_data = {k: v for k, v in payload.model_dump().items() if v is not None}
     if not update_data:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    # If username/email changing — check uniqueness
     if "username" in update_data:
         existing = supabase.table("admin_users").select("id").eq("username", update_data["username"]).neq("id", user["id"]).execute().data
         if existing:
@@ -270,7 +252,6 @@ async def update_my_profile(payload: UpdateProfileRequest, user: dict = Depends(
 
 @router.post("/me/change-password")
 async def change_my_password(payload: ChangePasswordRequest, user: dict = Depends(get_current_user)):
-    """Change own password — must provide current password for verification."""
     rows = supabase.table("admin_users").select("*").eq("id", user["id"]).execute().data or []
     if not rows:
         raise HTTPException(status_code=404, detail="User not found")
@@ -294,7 +275,6 @@ async def change_my_password(payload: ChangePasswordRequest, user: dict = Depend
 # =====================================================================
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest, background_tasks: BackgroundTasks):
-    """Generate a reset token and email it to the user. Always returns 200 (don't reveal account existence)."""
     rows = supabase.table("admin_users").select("*").eq("email", payload.email).execute().data or []
 
     if rows:
@@ -307,7 +287,6 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
             "reset_token_expires_at": expires_at,
         }).eq("id", user["id"]).execute()
 
-        # Build reset link — frontend will read ?token=... from URL
         reset_url = _build_reset_url(token)
         background_tasks.add_task(
             send_password_reset_email,
@@ -316,7 +295,6 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
             reset_url,
         )
 
-    # Generic success response (don't reveal whether email exists)
     return {
         "message": "If an account exists with this email, a password reset link has been sent. Please check your inbox.",
     }
@@ -324,7 +302,6 @@ async def forgot_password(payload: ForgotPasswordRequest, background_tasks: Back
 
 @router.post("/reset-password")
 async def reset_password(payload: ResetPasswordRequest):
-    """Reset password using a valid token from email."""
     rows = (
         supabase.table("admin_users")
         .select("*")
@@ -339,13 +316,11 @@ async def reset_password(payload: ResetPasswordRequest):
 
     user = rows[0]
 
-    # Check token expiry
     expires_str = user.get("reset_token_expires_at")
     if expires_str:
         try:
             expires_at = datetime.fromisoformat(expires_str.replace("Z", "+00:00"))
             if datetime.now(timezone.utc) > expires_at:
-                # Clean up expired token
                 supabase.table("admin_users").update({
                     "reset_token": None, "reset_token_expires_at": None,
                 }).eq("id", user["id"]).execute()
@@ -353,7 +328,6 @@ async def reset_password(payload: ResetPasswordRequest):
         except (ValueError, TypeError):
             raise HTTPException(status_code=400, detail="Invalid reset token")
 
-    # Update password and clear token
     supabase.table("admin_users").update({
         "password_hash":          hash_password(payload.new_password),
         "reset_token":            None,
@@ -365,7 +339,6 @@ async def reset_password(payload: ResetPasswordRequest):
 
 @router.post("/forgot-username")
 async def forgot_username(payload: ForgotUsernameRequest, background_tasks: BackgroundTasks):
-    """Email the user their username. Always returns 200."""
     rows = supabase.table("admin_users").select("*").eq("email", payload.email).execute().data or []
 
     if rows:
@@ -383,6 +356,15 @@ async def forgot_username(payload: ForgotUsernameRequest, background_tasks: Back
 
 
 # =====================================================================
+# Health check endpoint (for Render keep-alive cron job)
+# =====================================================================
+@router.get("/ping")
+async def ping():
+    """Lightweight endpoint for uptime monitors / cron job pings."""
+    return {"status": "alive", "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
+# =====================================================================
 # Helpers
 # =====================================================================
 def _maybe_raise_brute_force(client_ip: str | None, username: str | None):
@@ -394,7 +376,6 @@ def _maybe_raise_brute_force(client_ip: str | None, username: str | None):
 
 
 def _build_reset_url(token: str) -> str:
-    """Construct the password-reset URL using the first CORS origin (usually frontend)."""
-    origins = settings.cors_origins_list
-    base = origins[0] if origins else "http://localhost:5173"
+    """Construct the password-reset URL using FRONTEND_URL setting."""
+    base = settings.FRONTEND_URL.rstrip("/")
     return f"{base}/reset-password?token={token}"
