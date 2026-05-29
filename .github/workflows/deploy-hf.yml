@@ -1,0 +1,73 @@
+name: Deploy Backend to Hugging Face Spaces
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/deploy-hf.yml'
+  workflow_dispatch:  # Allow manual trigger from GitHub UI
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Configure Git identity
+        run: |
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git config --global user.name "github-actions[bot]"
+
+      - name: Clone Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
+        run: |
+          git clone https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/fiber-security-portal-api hf-space
+
+      - name: Copy backend files into HF Space
+        run: |
+          # Remove old files (except .git folder)
+          find hf-space -mindepth 1 -maxdepth 1 ! -name '.git' -exec rm -rf {} +
+
+          # Copy backend files (excluding stuff we don't want)
+          rsync -av --progress backend/ hf-space/ \
+            --exclude='.venv/' \
+            --exclude='venv/' \
+            --exclude='__pycache__/' \
+            --exclude='*.pyc' \
+            --exclude='.env' \
+            --exclude='.git/' \
+            --exclude='Lib/' \
+            --exclude='Scripts/' \
+            --exclude='share/' \
+            --exclude='pyvenv.cfg' \
+            --exclude='.pytest_cache/'
+
+      - name: Verify files
+        run: |
+          echo "=== Files in hf-space ==="
+          ls -la hf-space/
+          echo "=== Size ==="
+          du -sh hf-space/
+
+      - name: Commit and push to HF Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
+        run: |
+          cd hf-space
+          git add .
+          if git diff --staged --quiet; then
+            echo "No changes to deploy"
+          else
+            git commit -m "Auto-deploy from GitHub: ${GITHUB_SHA::7}"
+            git push https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/fiber-security-portal-api main
+            echo "✅ Successfully deployed to HF Space"
+          fi
