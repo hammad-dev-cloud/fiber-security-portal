@@ -17,12 +17,9 @@ class Settings(BaseSettings):
 
     # CORS
     CORS_ORIGINS: str = "http://localhost:5173,http://127.0.0.1:5173"
-
-    # NEW — Frontend URL for emails (password reset link, approved email button, etc.)
-    # In production this should be your deployed frontend URL (e.g., https://fiber-portal.vercel.app)
     FRONTEND_URL: str = "http://localhost:5173"
 
-    # Email
+    # Email — supports both SMTP and Resend API
     MAIL_USERNAME: str = ""
     MAIL_PASSWORD: str = ""
     MAIL_FROM: str = ""
@@ -31,6 +28,11 @@ class Settings(BaseSettings):
     MAIL_PORT: int = 587
     MAIL_STARTTLS: bool = True
     MAIL_SSL_TLS: bool = False
+
+    # NEW — Resend API (HTTP-based, no SMTP ports needed)
+    # If RESEND_API_KEY is set, the system uses Resend instead of SMTP.
+    # Best for cloud platforms (HF Spaces, Render, etc.) that block SMTP ports.
+    RESEND_API_KEY: str = ""
 
     # Brute-force protection
     BRUTE_FORCE_MAX_ATTEMPTS: int = 5

@@ -1,50 +1,142 @@
-"""Email notification service — uses fastapi-mail (SMTP)."""
+"""Email notification service — supports both Resend API and SMTP.
 
+If RESEND_API_KEY is configured, uses Resend HTTP API (recommended for cloud).
+Otherwise falls back to SMTP (good for local dev).
+"""
+
+import base64
 import os
 import tempfile
 from typing import List, Optional
 
+import httpx
 from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
 from pydantic import EmailStr
 
 from app.config import settings
 
 
-def _build_config() -> Optional[ConnectionConfig]:
+# =====================================================================
+# Determine which email backend to use
+# =====================================================================
+def _use_resend() -> bool:
+    """Return True if Resend API should be used (preferred for cloud)."""
+    return bool(settings.RESEND_API_KEY)
+
+
+# =====================================================================
+# SMTP backend (fallback for local dev)
+# =====================================================================
+def _build_smtp_config() -> Optional[ConnectionConfig]:
     if not settings.MAIL_USERNAME or not settings.MAIL_PASSWORD or not settings.MAIL_FROM:
         return None
     return ConnectionConfig(
-        MAIL_USERNAME   = settings.MAIL_USERNAME,
-        MAIL_PASSWORD   = settings.MAIL_PASSWORD,
-        MAIL_FROM       = settings.MAIL_FROM,
-        MAIL_FROM_NAME  = settings.MAIL_FROM_NAME,
-        MAIL_PORT       = settings.MAIL_PORT,
-        MAIL_SERVER     = settings.MAIL_SERVER,
-        MAIL_STARTTLS   = settings.MAIL_STARTTLS,
-        MAIL_SSL_TLS    = settings.MAIL_SSL_TLS,
-        USE_CREDENTIALS = True,
-        VALIDATE_CERTS  = True,
+        MAIL_USERNAME=settings.MAIL_USERNAME, MAIL_PASSWORD=settings.MAIL_PASSWORD,
+        MAIL_FROM=settings.MAIL_FROM, MAIL_FROM_NAME=settings.MAIL_FROM_NAME,
+        MAIL_PORT=settings.MAIL_PORT, MAIL_SERVER=settings.MAIL_SERVER,
+        MAIL_STARTTLS=settings.MAIL_STARTTLS, MAIL_SSL_TLS=settings.MAIL_SSL_TLS,
+        USE_CREDENTIALS=True, VALIDATE_CERTS=True,
     )
 
 
-async def send_email(recipients, subject, html_body, attachments=None):
-    config = _build_config()
+async def _send_smtp(recipients, subject, html_body, attachments=None) -> bool:
+    config = _build_smtp_config()
     if not config:
-        print(f"[email] SMTP not configured — would have sent to {recipients}: {subject}")
+        print(f"[email-smtp] SMTP not configured — would send to {recipients}: {subject}")
         return False
     try:
         message = MessageSchema(
-            subject = subject, recipients = recipients, body = html_body,
-            subtype = MessageType.html, attachments = attachments or [],
+            subject=subject, recipients=recipients, body=html_body,
+            subtype=MessageType.html, attachments=attachments or [],
         )
         await FastMail(config).send_message(message)
-        print(f"[email] sent to {recipients}: {subject}")
+        print(f"[email-smtp] sent to {recipients}: {subject}")
         return True
     except Exception as exc:
-        print(f"[email] send failed: {exc}")
+        print(f"[email-smtp] send failed: {exc}")
         return False
 
 
+# =====================================================================
+# Resend backend (preferred for cloud — HTTP API, no SMTP)
+# =====================================================================
+async def _send_resend(recipients, subject, html_body, attachments=None) -> bool:
+    """Send email via Resend HTTP API. Works on any cloud (no SMTP ports needed)."""
+    if not settings.RESEND_API_KEY:
+        print("[email-resend] RESEND_API_KEY not configured")
+        return False
+
+    # Resend requires a 'from' in format: "Name <email@domain>"
+    from_field = (
+        f"{settings.MAIL_FROM_NAME} <{settings.MAIL_FROM}>"
+        if settings.MAIL_FROM
+        else f"{settings.MAIL_FROM_NAME} <onboarding@resend.dev>"
+    )
+
+    payload = {
+        "from":    from_field,
+        "to":      recipients,
+        "subject": subject,
+        "html":    html_body,
+    }
+
+    # Convert fastapi-mail style attachments to Resend format
+    if attachments:
+        resend_attachments = []
+        for att in attachments:
+            file_path = att.get("file")
+            if not file_path or not os.path.exists(file_path):
+                continue
+            with open(file_path, "rb") as f:
+                content_b64 = base64.b64encode(f.read()).decode()
+            # Extract filename from headers if present
+            headers = att.get("headers", {})
+            disposition = headers.get("Content-Disposition", "")
+            filename = "attachment.pdf"
+            if "filename=" in disposition:
+                filename = disposition.split("filename=")[1].strip('"')
+            resend_attachments.append({
+                "filename": filename,
+                "content":  content_b64,
+            })
+        if resend_attachments:
+            payload["attachments"] = resend_attachments
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
+                    "Content-Type":  "application/json",
+                },
+                json=payload,
+            )
+        if response.status_code in (200, 201, 202):
+            print(f"[email-resend] sent to {recipients}: {subject}")
+            return True
+        else:
+            print(f"[email-resend] failed ({response.status_code}): {response.text}")
+            return False
+    except Exception as exc:
+        print(f"[email-resend] exception: {exc}")
+        return False
+
+
+# =====================================================================
+# Unified send function — chooses backend automatically
+# =====================================================================
+async def send_email(recipients: List[EmailStr], subject: str,
+                     html_body: str, attachments: Optional[List[dict]] = None) -> bool:
+    """Main send function — uses Resend if configured, else SMTP."""
+    if _use_resend():
+        return await _send_resend(recipients, subject, html_body, attachments)
+    return await _send_smtp(recipients, subject, html_body, attachments)
+
+
+# =====================================================================
+# Email templates (unchanged from before)
+# =====================================================================
 _BASE_CSS = "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f6fa; padding: 32px;"
 _CARD_CSS = "max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 14px; padding: 32px; border: 1px solid #e5e7eb; box-shadow: 0 6px 24px rgba(15,23,42,0.05);"
 
@@ -67,7 +159,7 @@ def _wrap(title, body_html, accent="#0ea5e9"):
 
 
 # =====================================================================
-# Standard notifications
+# Email sender functions
 # =====================================================================
 async def send_package_expiry_notice(to, customer_name, days_left):
     body = f"""
@@ -133,15 +225,12 @@ async def send_payment_receipt(to, customer_name, amount_pkr, package_name, peri
             "mime_type": "application", "mime_subtype": "pdf",
         }]
         return await send_email([to], f"Payment Receipt — {invoice_number}",
-                                 _wrap("Payment Received — Thank You", body, "#059669"), attachments=attachments)
+                                _wrap("Payment Received — Thank You", body, "#059669"), attachments=attachments)
     finally:
         try: os.unlink(tmp.name)
         except Exception: pass
 
 
-# =====================================================================
-# Password reset
-# =====================================================================
 async def send_password_reset_email(to, full_name, reset_url):
     body = f"""
       <p>Dear <strong>{full_name}</strong>,</p>
@@ -174,30 +263,22 @@ async def send_username_reminder_email(to, full_name, username):
         <p style="margin:8px 0 0; color:#0c4a6e; font-family:monospace; font-size:20px; font-weight:700;">{username}</p>
       </div>
       <p>You can now sign in to the portal using this username.</p>
-      <p style="margin-top:18px; padding:12px; background:#fef3c7; border-left:3px solid #f59e0b; border-radius:6px; font-size:13px; color:#78350f;">
-        <strong>Security notice:</strong> If you did not request this reminder, please ignore this email or contact support.
-      </p>
     """
     return await send_email([to], "Your username — Fiber Security Portal", _wrap("Username Reminder", body, "#0ea5e9"))
 
 
-# =====================================================================
-# Signup workflow
-# =====================================================================
 async def send_signup_received_email(to, full_name):
     body = f"""
       <p>Dear <strong>{full_name}</strong>,</p>
       <p>Thank you for signing up for the Fiber Security Portal.</p>
       <p>We have received your account application and it is currently <strong>pending admin approval</strong>.
       You will receive another email once your account has been reviewed.</p>
-      <p>This review typically takes a few hours to one business day.</p>
       <p>Thank you for your patience.</p>
     """
     return await send_email([to], "Signup received — pending approval", _wrap("Signup Application Received", body, "#0ea5e9"))
 
 
 async def send_signup_approved_email(to, full_name):
-    # NEW — uses FRONTEND_URL setting (production-aware)
     login_url = f"{settings.FRONTEND_URL.rstrip('/')}/login"
     body = f"""
       <p>Dear <strong>{full_name}</strong>,</p>
