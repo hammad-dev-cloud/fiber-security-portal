@@ -10,6 +10,7 @@ import {
   CreditCard,
   Router as RouterIcon,
   ShieldAlert,
+  Settings as SettingsIcon,
   LogOut,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
@@ -22,6 +23,7 @@ const navItems = [
   { to: '/routers',    icon: RouterIcon,      label: 'Routers' },
   { to: '/alerts',     icon: ShieldAlert,     label: 'Alerts' },
   { to: '/security',   icon: Lock,            label: 'Security Ops' },
+  { to: '/settings',   icon: SettingsIcon,    label: 'Settings' },
 ]
 
 const pageTitles = {
@@ -32,6 +34,7 @@ const pageTitles = {
   '/routers':   { title: 'Routers',         subtitle: 'Network equipment monitoring' },
   '/alerts':    { title: 'Security Alerts', subtitle: 'Incidents and intrusion events' },
   '/security':  { title: 'Security Ops',    subtitle: 'MAC verification, IDS, port scanning' },
+  '/settings':  { title: 'Settings',        subtitle: 'Profile, password and partner approvals' },
 }
 
 export default function Topbar() {
@@ -43,7 +46,6 @@ export default function Topbar() {
   return (
     <>
       <header className="sticky top-0 z-30 flex items-center justify-between gap-4 px-4 sm:px-6 lg:px-8 py-4 bg-ink-950/70 backdrop-blur-xl border-b border-white/[0.05]">
-        {/* Left — page title or mobile menu */}
         <div className="flex items-center gap-3 min-w-0">
           <button
             onClick={() => setMobileOpen(true)}
@@ -58,7 +60,6 @@ export default function Topbar() {
           </div>
         </div>
 
-        {/* Right — search shortcut + user (placeholder) */}
         <div className="flex items-center gap-3">
           <div className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-lg bg-white/[0.04] border border-white/[0.06] text-xs text-ink-300">
             <span className="glow-dot bg-emerald-400" />
@@ -70,7 +71,6 @@ export default function Topbar() {
         </div>
       </header>
 
-      {/* Mobile drawer */}
       {mobileOpen && (
         <div
           className="fixed inset-0 z-50 bg-ink-950/80 backdrop-blur-sm lg:hidden"

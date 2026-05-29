@@ -9,9 +9,9 @@ const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 })
 
-// ----- Attach JWT to every request -----
+// ----- Attach JWT to every request (from sessionStorage) -----
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('fsp_token')
+  const token = sessionStorage.getItem('fsp_token')
   if (token) config.headers.Authorization = `Bearer ${token}`
   return config
 })
@@ -24,9 +24,9 @@ api.interceptors.response.use(
     const message = err?.response?.data?.detail || err.message || 'Request failed'
 
     if (status === 401) {
-      localStorage.removeItem('fsp_token')
-      localStorage.removeItem('fsp_user')
-      // Only redirect if not already on login page
+      // Token invalid / expired — clear session and redirect to login
+      sessionStorage.removeItem('fsp_token')
+      sessionStorage.removeItem('fsp_user')
       if (!window.location.pathname.includes('/login')) {
         window.location.href = '/login'
       }

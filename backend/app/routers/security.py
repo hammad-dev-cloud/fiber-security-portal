@@ -40,3 +40,39 @@ async def suspicious_ips_endpoint(window_minutes: int = 15, threshold: int = 10,
 @router.post("/scan/full")
 async def full_scan_endpoint(host: str | None = None, _: dict = Depends(get_current_user)):
     return run_full_scan(host=host)
+
+# ---------------------------------------------------------------------
+# Email testing endpoints (for demo / testing only)
+# ---------------------------------------------------------------------
+from app.services.email_service import (
+    send_package_expiry_notice,
+    send_security_alert,
+    send_router_offline_notice,
+)
+
+
+@router.post("/test-email/expiry")
+async def test_expiry_email(to_email: str, _: dict = Depends(get_current_user)):
+    """Send a sample package-expiry email to the given address."""
+    sent = await send_package_expiry_notice(to_email, "Test Customer", days_left=2)
+    return {"sent": sent, "type": "package_expiry", "to": to_email,
+            "note": "If sent=false, check backend terminal — SMTP may not be configured."}
+
+
+@router.post("/test-email/alert")
+async def test_alert_email(to_email: str, _: dict = Depends(get_current_user)):
+    """Send a sample security-alert email to the given address."""
+    sent = await send_security_alert(
+        to_email,
+        alert_type="brute_force",
+        message="Test brute-force attempt detected from IP 192.168.1.55 — 5 failed attempts.",
+        severity="high",
+    )
+    return {"sent": sent, "type": "security_alert", "to": to_email}
+
+
+@router.post("/test-email/router-down")
+async def test_router_down_email(to_email: str, _: dict = Depends(get_current_user)):
+    """Send a sample router-offline email to the given address."""
+    sent = await send_router_offline_notice(to_email, "Test-Router", "Test Customer")
+    return {"sent": sent, "type": "router_offline", "to": to_email}

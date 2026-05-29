@@ -14,3 +14,4 @@ ping3>=4.0.8
 fastapi-mail>=1.4.2
 email-validator>=2.2.0
 apscheduler>=3.10.4
+reportlab>=4.2.0

@@ -7,6 +7,7 @@ import {
   Router as RouterIcon,
   ShieldAlert,
   Lock,
+  Settings as SettingsIcon,
   LogOut,
 } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/routers',    icon: RouterIcon,      label: 'Routers'       },
   { to: '/alerts',     icon: ShieldAlert,     label: 'Security Alerts' },
   { to: '/security',   icon: Lock,            label: 'Security Ops'  },
+  { to: '/settings',   icon: SettingsIcon,    label: 'Settings'      },
 ]
 
 export default function Sidebar() {

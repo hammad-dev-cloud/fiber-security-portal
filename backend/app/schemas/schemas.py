@@ -7,7 +7,7 @@ from pydantic import BaseModel, EmailStr, Field
 
 
 # =====================================================================
-# AUTH
+# AUTH — Login / Register / Update / Password
 # =====================================================================
 class LoginRequest(BaseModel):
     username: str = Field(min_length=3, max_length=60)
@@ -22,6 +22,49 @@ class RegisterRequest(BaseModel):
     role:      str       = "admin"
 
 
+# NEW — public signup (creates pending account)
+class SignupRequest(BaseModel):
+    username:  str       = Field(min_length=3, max_length=60)
+    email:     EmailStr
+    password:  str       = Field(min_length=6, max_length=128)
+    full_name: str       = Field(min_length=2, max_length=120)
+    phone:     Optional[str] = None
+
+
+# NEW — update own profile
+class UpdateProfileRequest(BaseModel):
+    full_name: Optional[str]      = None
+    email:     Optional[EmailStr] = None
+    phone:     Optional[str]      = None
+    username:  Optional[str]      = Field(default=None, min_length=3, max_length=60)
+
+
+# NEW — change own password
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=4, max_length=128)
+    new_password:     str = Field(min_length=6, max_length=128)
+
+
+# NEW — forgot password flow
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    token:        str = Field(min_length=10)
+    new_password: str = Field(min_length=6, max_length=128)
+
+
+# NEW — forgot username (sends username by email)
+class ForgotUsernameRequest(BaseModel):
+    email: EmailStr
+
+
+# NEW — admin approve / reject pending signup
+class ApproveSignupRequest(BaseModel):
+    approve: bool
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type:   str = "bearer"
@@ -29,12 +72,14 @@ class TokenResponse(BaseModel):
 
 
 class UserOut(BaseModel):
-    id:        int
-    username:  str
-    email:     str
-    full_name: Optional[str] = None
-    role:      str
-    is_active: bool
+    id:         int
+    username:   str
+    email:      str
+    full_name:  Optional[str] = None
+    phone:      Optional[str] = None
+    role:       str
+    is_active:  bool
+    is_pending: Optional[bool] = False
 
 
 # =====================================================================
