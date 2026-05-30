@@ -1,15 +1,24 @@
 """Authentication routes: login, register, me + user management (owner-only)."""
 
+import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 
+from app.config import settings
 from app.database import supabase
 from app.schemas.schemas import (
+    ApproveSignupRequest,
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    ForgotUsernameRequest,
     LoginRequest,
     RegisterRequest,
+    ResetPasswordRequest,
+    SignupRequest,
     TokenResponse,
+    UpdateProfileRequest,
     UserOut,
 )
 from app.security.brute_force import (
@@ -20,16 +29,22 @@ from app.security.brute_force import (
 )
 from app.security.hashing import hash_password, verify_password
 from app.security.jwt_handler import create_access_token, get_current_user, require_role
+from app.services.email_service import (
+    send_password_reset_email,
+    send_signup_approved_email,
+    send_signup_received_email,
+    send_signup_rejected_email,
+    send_username_reminder_email,
+)
 
 router = APIRouter()
 
 
 # =====================================================================
-# Existing endpoints
+# LOGIN
 # =====================================================================
 @router.post("/login", response_model=TokenResponse)
 async def login(payload: LoginRequest, request: Request):
-    """Login. Records every attempt, blocks IPs after too many failures."""
     client_ip  = (request.client.host if request.client else None) or request.headers.get("x-forwarded-for")
     user_agent = request.headers.get("user-agent", "")
 
@@ -66,7 +81,6 @@ async def login(payload: LoginRequest, request: Request):
         _maybe_raise_brute_force(client_ip, payload.username)
         raise HTTPException(status_code=401, detail="Invalid username or password")
 
-    # Success
     record_login_attempt(payload.username, client_ip, user_agent, True, "ok")
     supabase.table("admin_users").update({
         "last_login_at": datetime.now(timezone.utc).isoformat(),
@@ -93,9 +107,11 @@ async def login(payload: LoginRequest, request: Request):
     )
 
 
+# =====================================================================
+# REGISTER
+# =====================================================================
 @router.post("/register", response_model=UserOut, status_code=201)
 async def register(payload: RegisterRequest, _: dict = Depends(require_role("admin"))):
-    """Create a new admin/viewer account. Admin-only."""
     existing = supabase.table("admin_users").select("id").or_(
         f"username.eq.{payload.username},email.eq.{payload.email}"
     ).execute().data
@@ -113,175 +129,52 @@ async def register(payload: RegisterRequest, _: dict = Depends(require_role("adm
     return UserOut(**new_row)
 
 
-@router.get("/me", response_model=UserOut)
+# =====================================================================
+# ME
+# =====================================================================
+@router.get("/me")
 async def me(user: dict = Depends(get_current_user)):
     rows = supabase.table("admin_users").select("*").eq("id", user["id"]).execute().data or []
     if not rows:
         raise HTTPException(status_code=404, detail="User not found")
-    return UserOut(**rows[0])
+    return rows[0]
 
 
 # =====================================================================
-# NEW — USER MANAGEMENT (Owner only)
+# UPDATE PROFILE
 # =====================================================================
-def _require_owner(user: dict) -> dict:
-    """Validate that the current user has is_owner=True in the DB."""
-    rows = supabase.table("admin_users").select("is_owner").eq("id", user["id"]).execute().data or []
-    if not rows or not rows[0].get("is_owner"):
-        raise HTTPException(status_code=403, detail="Owner access required for this operation")
-    return user
+@router.put("/profile")
+async def update_profile(payload: UpdateProfileRequest, user: dict = Depends(get_current_user)):
+    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not updates:
+        return {"message": "No changes"}
+    supabase.table("admin_users").update(updates).eq("id", user["id"]).execute()
+    rows = supabase.table("admin_users").select("*").eq("id", user["id"]).execute().data
+    return rows[0] if rows else {"message": "Updated"}
 
 
-class UserStatusUpdate(BaseModel):
-    is_active: bool
-
-
-class UserRoleUpdate(BaseModel):
-    role: str  # 'admin' | 'viewer'
-
-
-@router.get("/users")
-async def list_users(user: dict = Depends(get_current_user)):
-    """Owner-only — list every admin user with full details."""
-    _require_owner(user)
-    rows = (
-        supabase.table("admin_users")
-        .select("id, username, email, full_name, phone, role, is_owner, is_active, is_pending, last_login_at, login_count, created_at")
-        .order("created_at", desc=False)
-        .execute()
-        .data
-        or []
-    )
-    return rows
-
-
-@router.get("/users/stats")
-async def users_stats(user: dict = Depends(get_current_user)):
-    """Owner-only — aggregate user statistics."""
-    _require_owner(user)
-    rows = supabase.table("admin_users").select("role, is_active, is_owner, is_pending, login_count").execute().data or []
-    total       = len(rows)
-    active      = sum(1 for r in rows if r.get("is_active") and not r.get("is_pending"))
-    inactive    = sum(1 for r in rows if not r.get("is_active"))
-    pending     = sum(1 for r in rows if r.get("is_pending"))
-    owners      = sum(1 for r in rows if r.get("is_owner"))
-    admins      = sum(1 for r in rows if r.get("role") == "admin" and not r.get("is_owner"))
-    viewers     = sum(1 for r in rows if r.get("role") == "viewer")
-    total_logins = sum(r.get("login_count") or 0 for r in rows)
-
-    return {
-        "total":        total,
-        "active":       active,
-        "inactive":     inactive,
-        "pending":      pending,
-        "owners":       owners,
-        "admins":       admins,
-        "viewers":      viewers,
-        "total_logins": total_logins,
-    }
-
-
-@router.put("/users/{user_id}/status")
-async def update_user_status(user_id: int, payload: UserStatusUpdate,
-                             user: dict = Depends(get_current_user)):
-    """Owner-only — activate or deactivate a user. Cannot affect owners."""
-    _require_owner(user)
-
-    if user_id == user["id"]:
-        raise HTTPException(status_code=400, detail="You cannot change your own status")
-
-    target = supabase.table("admin_users").select("is_owner, username").eq("id", user_id).single().execute().data
-    if not target:
+# =====================================================================
+# CHANGE PASSWORD
+# =====================================================================
+@router.put("/password")
+async def change_password(payload: ChangePasswordRequest, user: dict = Depends(get_current_user)):
+    rows = supabase.table("admin_users").select("*").eq("id", user["id"]).execute().data or []
+    if not rows:
         raise HTTPException(status_code=404, detail="User not found")
-    if target.get("is_owner"):
-        raise HTTPException(status_code=403, detail="Owner accounts cannot be deactivated")
+    if not verify_password(payload.current_password, rows[0]["password_hash"]):
+        raise HTTPException(status_code=401, detail="Current password is incorrect")
 
-    updated = supabase.table("admin_users").update({
-        "is_active": payload.is_active,
-    }).eq("id", user_id).execute().data
-
-    if not updated:
-        raise HTTPException(status_code=500, detail="Update failed")
-    return {"id": user_id, "is_active": payload.is_active, "message": "Status updated"}
-
-
-@router.put("/users/{user_id}/role")
-async def update_user_role(user_id: int, payload: UserRoleUpdate,
-                           user: dict = Depends(get_current_user)):
-    """Owner-only — change a user's role. Cannot change owner role."""
-    _require_owner(user)
-
-    if payload.role not in ("admin", "viewer"):
-        raise HTTPException(status_code=400, detail="Invalid role. Must be 'admin' or 'viewer'")
-
-    if user_id == user["id"]:
-        raise HTTPException(status_code=400, detail="You cannot change your own role")
-
-    target = supabase.table("admin_users").select("is_owner").eq("id", user_id).single().execute().data
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found")
-    if target.get("is_owner"):
-        raise HTTPException(status_code=403, detail="Owner role cannot be changed")
-
-    supabase.table("admin_users").update({"role": payload.role}).eq("id", user_id).execute()
-    return {"id": user_id, "role": payload.role, "message": "Role updated"}
-
-
-@router.delete("/users/{user_id}")
-async def delete_user(user_id: int, user: dict = Depends(get_current_user)):
-    """Owner-only — permanently delete a user. Cannot delete owner or self."""
-    _require_owner(user)
-
-    if user_id == user["id"]:
-        raise HTTPException(status_code=400, detail="You cannot delete your own account")
-
-    target = supabase.table("admin_users").select("is_owner, username").eq("id", user_id).single().execute().data
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found")
-    if target.get("is_owner"):
-        raise HTTPException(status_code=403, detail="Owner accounts cannot be deleted")
-
-    supabase.table("admin_users").delete().eq("id", user_id).execute()
-    return {"deleted": True, "id": user_id, "username": target.get("username")}
+    supabase.table("admin_users").update({
+        "password_hash": hash_password(payload.new_password),
+    }).eq("id", user["id"]).execute()
+    return {"message": "Password changed successfully"}
 
 
 # =====================================================================
-# Existing helpers / endpoints below (kept intact)
+# PUBLIC SIGNUP
 # =====================================================================
-def _maybe_raise_brute_force(client_ip: str | None, username: str | None):
-    if not client_ip:
-        return
-    fails = recent_failed_attempts(client_ip)
-    from app.config import settings
-    if fails >= settings.BRUTE_FORCE_MAX_ATTEMPTS:
-        raise_brute_force_alert(client_ip, fails, username)
-
-
-# ---------------------------------------------------------------------
-# Public signup + password reset + username reminder (already added)
-# These remain unchanged from previous versions.
-# ---------------------------------------------------------------------
-from app.schemas.schemas import (
-    PublicSignupRequest,
-    ForgotPasswordRequest,
-    ForgotUsernameRequest,
-    ResetPasswordRequest,
-    PendingSignupAction,
-)
-from app.services.email_service import (
-    send_signup_received_email,
-    send_signup_approved_email,
-    send_signup_rejected_email,
-    send_password_reset_email,
-    send_username_reminder_email,
-)
-from app.config import settings
-import secrets
-
-
 @router.post("/signup", status_code=201)
-async def public_signup(payload: PublicSignupRequest, _request: Request):
-    """Public signup — creates pending account."""
+async def public_signup(payload: SignupRequest, _request: Request):
     existing = supabase.table("admin_users").select("id").or_(
         f"username.eq.{payload.username},email.eq.{payload.email}"
     ).execute().data
@@ -307,6 +200,9 @@ async def public_signup(payload: PublicSignupRequest, _request: Request):
     return {"message": "Signup successful. Pending admin approval."}
 
 
+# =====================================================================
+# PENDING SIGNUPS
+# =====================================================================
 @router.get("/pending-signups")
 async def list_pending_signups(_: dict = Depends(get_current_user)):
     rows = (
@@ -322,13 +218,13 @@ async def list_pending_signups(_: dict = Depends(get_current_user)):
 
 
 @router.post("/pending-signups/{user_id}/action")
-async def act_on_pending_signup(user_id: int, payload: PendingSignupAction,
+async def act_on_pending_signup(user_id: int, payload: ApproveSignupRequest,
                                  _: dict = Depends(get_current_user)):
     target = supabase.table("admin_users").select("*").eq("id", user_id).single().execute().data
     if not target or not target.get("is_pending"):
         raise HTTPException(status_code=404, detail="Pending signup not found")
 
-    if payload.action == "approve":
+    if payload.approve:
         supabase.table("admin_users").update({
             "is_active": True, "is_pending": False,
         }).eq("id", user_id).execute()
@@ -337,17 +233,18 @@ async def act_on_pending_signup(user_id: int, payload: PendingSignupAction,
         except Exception as exc:
             print(f"[approve] email failed: {exc}")
         return {"message": "Approved", "id": user_id}
-    elif payload.action == "reject":
+    else:
         supabase.table("admin_users").delete().eq("id", user_id).execute()
         try:
             await send_signup_rejected_email(target["email"], target.get("full_name", ""))
         except Exception as exc:
             print(f"[reject] email failed: {exc}")
         return {"message": "Rejected", "id": user_id}
-    else:
-        raise HTTPException(status_code=400, detail="Invalid action")
 
 
+# =====================================================================
+# FORGOT PASSWORD / USERNAME / RESET
+# =====================================================================
 @router.post("/forgot-password")
 async def forgot_password(payload: ForgotPasswordRequest):
     rows = supabase.table("admin_users").select("*").eq("email", payload.email).limit(1).execute().data or []
@@ -366,7 +263,6 @@ async def forgot_password(payload: ForgotPasswordRequest):
         except Exception as exc:
             print(f"[forgot_password] email failed: {exc}")
 
-    # Always return same message (security — don't leak which emails exist)
     return {"message": "If an account with that email exists, a reset link has been sent."}
 
 
@@ -403,36 +299,117 @@ async def reset_password(payload: ResetPasswordRequest):
     return {"message": "Password reset successful"}
 
 
-class ProfileUpdate(BaseModel):
-    full_name: str | None = None
-    email: str | None = None
-    phone: str | None = None
+# =====================================================================
+# USER MANAGEMENT (Owner only)
+# =====================================================================
+def _require_owner(user: dict) -> dict:
+    rows = supabase.table("admin_users").select("is_owner").eq("id", user["id"]).execute().data or []
+    if not rows or not rows[0].get("is_owner"):
+        raise HTTPException(status_code=403, detail="Owner access required for this operation")
+    return user
 
 
-class PasswordChange(BaseModel):
-    current_password: str
-    new_password: str
+class UserStatusUpdate(BaseModel):
+    is_active: bool
 
 
-@router.put("/profile")
-async def update_profile(payload: ProfileUpdate, user: dict = Depends(get_current_user)):
-    updates = {k: v for k, v in payload.model_dump().items() if v is not None}
-    if not updates:
-        return {"message": "No changes"}
-    supabase.table("admin_users").update(updates).eq("id", user["id"]).execute()
-    rows = supabase.table("admin_users").select("*").eq("id", user["id"]).execute().data
-    return rows[0] if rows else {"message": "Updated"}
+class UserRoleUpdate(BaseModel):
+    role: str
 
 
-@router.put("/password")
-async def change_password(payload: PasswordChange, user: dict = Depends(get_current_user)):
-    rows = supabase.table("admin_users").select("*").eq("id", user["id"]).execute().data or []
-    if not rows:
+@router.get("/users")
+async def list_users(user: dict = Depends(get_current_user)):
+    _require_owner(user)
+    rows = (
+        supabase.table("admin_users")
+        .select("id, username, email, full_name, phone, role, is_owner, is_active, is_pending, last_login_at, login_count, created_at")
+        .order("created_at", desc=False)
+        .execute()
+        .data
+        or []
+    )
+    return rows
+
+
+@router.get("/users/stats")
+async def users_stats(user: dict = Depends(get_current_user)):
+    _require_owner(user)
+    rows = supabase.table("admin_users").select("role, is_active, is_owner, is_pending, login_count").execute().data or []
+    total       = len(rows)
+    active      = sum(1 for r in rows if r.get("is_active") and not r.get("is_pending"))
+    inactive    = sum(1 for r in rows if not r.get("is_active"))
+    pending     = sum(1 for r in rows if r.get("is_pending"))
+    owners      = sum(1 for r in rows if r.get("is_owner"))
+    admins      = sum(1 for r in rows if r.get("role") == "admin" and not r.get("is_owner"))
+    viewers     = sum(1 for r in rows if r.get("role") == "viewer")
+    total_logins = sum(r.get("login_count") or 0 for r in rows)
+
+    return {
+        "total":        total,
+        "active":       active,
+        "inactive":     inactive,
+        "pending":      pending,
+        "owners":       owners,
+        "admins":       admins,
+        "viewers":      viewers,
+        "total_logins": total_logins,
+    }
+
+
+@router.put("/users/{user_id}/status")
+async def update_user_status(user_id: int, payload: UserStatusUpdate,
+                             user: dict = Depends(get_current_user)):
+    _require_owner(user)
+    if user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="You cannot change your own status")
+    target = supabase.table("admin_users").select("is_owner, username").eq("id", user_id).single().execute().data
+    if not target:
         raise HTTPException(status_code=404, detail="User not found")
-    if not verify_password(payload.current_password, rows[0]["password_hash"]):
-        raise HTTPException(status_code=401, detail="Current password is incorrect")
+    if target.get("is_owner"):
+        raise HTTPException(status_code=403, detail="Owner accounts cannot be deactivated")
+    updated = supabase.table("admin_users").update({"is_active": payload.is_active}).eq("id", user_id).execute().data
+    if not updated:
+        raise HTTPException(status_code=500, detail="Update failed")
+    return {"id": user_id, "is_active": payload.is_active, "message": "Status updated"}
 
-    supabase.table("admin_users").update({
-        "password_hash": hash_password(payload.new_password),
-    }).eq("id", user["id"]).execute()
-    return {"message": "Password changed successfully"}
+
+@router.put("/users/{user_id}/role")
+async def update_user_role(user_id: int, payload: UserRoleUpdate,
+                           user: dict = Depends(get_current_user)):
+    _require_owner(user)
+    if payload.role not in ("admin", "viewer"):
+        raise HTTPException(status_code=400, detail="Invalid role. Must be 'admin' or 'viewer'")
+    if user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="You cannot change your own role")
+    target = supabase.table("admin_users").select("is_owner").eq("id", user_id).single().execute().data
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("is_owner"):
+        raise HTTPException(status_code=403, detail="Owner role cannot be changed")
+    supabase.table("admin_users").update({"role": payload.role}).eq("id", user_id).execute()
+    return {"id": user_id, "role": payload.role, "message": "Role updated"}
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: int, user: dict = Depends(get_current_user)):
+    _require_owner(user)
+    if user_id == user["id"]:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+    target = supabase.table("admin_users").select("is_owner, username").eq("id", user_id).single().execute().data
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.get("is_owner"):
+        raise HTTPException(status_code=403, detail="Owner accounts cannot be deleted")
+    supabase.table("admin_users").delete().eq("id", user_id).execute()
+    return {"deleted": True, "id": user_id, "username": target.get("username")}
+
+
+# =====================================================================
+# HELPERS
+# =====================================================================
+def _maybe_raise_brute_force(client_ip: str | None, username: str | None):
+    if not client_ip:
+        return
+    fails = recent_failed_attempts(client_ip)
+    if fails >= settings.BRUTE_FORCE_MAX_ATTEMPTS:
+        raise_brute_force_alert(client_ip, fails, username)
