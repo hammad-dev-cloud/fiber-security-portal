@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react'
-import { User, Lock, Save, Eye, EyeOff, UserCheck, UserX, Mail, Phone, AtSign } from 'lucide-react'
+import { User, Lock, Save, Eye, EyeOff, UserCheck, UserX, Mail, Phone, AtSign, Crown } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '../api/client'
 import { useAuth } from '../context/AuthContext'
 import Loader from '../components/Loader'
+import UserManagement from '../components/UserManagement'
 
 export default function Settings() {
   const { user: ctxUser, updateLocalUser, logout } = useAuth()
-  const [tab, setTab] = useState('profile')   // profile | password | signups
+  const [tab, setTab] = useState('profile')   // profile | password | signups | users
 
   // Profile state
   const [profile, setProfile] = useState({ username: '', email: '', full_name: '', phone: '' })
@@ -24,7 +25,10 @@ export default function Settings() {
   const [signupsLoading, setSignupsLoading] = useState(false)
   const [busyUserId, setBusyUserId] = useState(null)
 
-  // Load profile
+  // Owner check — shows Users tab only if current user is owner
+  const [isOwner, setIsOwner] = useState(false)
+
+  // Load profile + check owner status
   useEffect(() => {
     (async () => {
       try {
@@ -35,6 +39,7 @@ export default function Settings() {
           full_name: me.full_name || '',
           phone:     me.phone     || '',
         })
+        setIsOwner(!!me.is_owner)
       } catch (err) { toast.error(err.message) }
       finally { setProfileLoading(false) }
     })()
@@ -64,22 +69,20 @@ export default function Settings() {
       for (const [k, v] of Object.entries(profile)) {
         if (v && v.trim()) payload[k] = v.trim()
       }
-      await api.put('/auth/me', payload)
+      await api.put('/auth/profile', payload)
       toast.success('Profile updated successfully')
 
-      // Sync the updated info into AuthContext + sessionStorage
       updateLocalUser({
         username:  payload.username  ?? ctxUser?.username,
         email:     payload.email     ?? ctxUser?.email,
         full_name: payload.full_name ?? ctxUser?.full_name,
       })
 
-      // If username changed → force re-login (JWT now stale)
       if (payload.username && payload.username !== ctxUser?.username) {
         toast('Username changed — please sign in again', { icon: 'ℹ️', duration: 4000 })
         setTimeout(() => logout('silent'), 2000)
       }
-    } catch (err) { toast.error(err.message) }
+    } catch (err) { toast.error(err.response?.data?.detail || err.message) }
     finally { setSavingProfile(false) }
   }
 
@@ -93,35 +96,39 @@ export default function Settings() {
     }
     setSavingPwd(true)
     try {
-      await api.post('/auth/me/change-password', {
+      await api.put('/auth/password', {
         current_password: pwd.current_password,
         new_password:     pwd.new_password,
       })
       toast.success('Password changed successfully')
       setPwd({ current_password: '', new_password: '', confirm_password: '' })
-    } catch (err) { toast.error(err.message) }
+    } catch (err) { toast.error(err.response?.data?.detail || err.message) }
     finally { setSavingPwd(false) }
   }
 
   const decideSignup = async (userId, approve) => {
     setBusyUserId(userId)
     try {
-      await api.post(`/auth/pending-signups/${userId}/decide`, { approve })
+      await api.post(`/auth/pending-signups/${userId}/action`, { action: approve ? 'approve' : 'reject' })
       toast.success(approve ? 'Application approved' : 'Application rejected')
       loadSignups()
-    } catch (err) { toast.error(err.message) }
+    } catch (err) { toast.error(err.response?.data?.detail || err.message) }
     finally { setBusyUserId(null) }
   }
+
+  // Tabs configuration — Users tab only shown to owner
+  const tabs = [
+    { id: 'profile',  icon: User,       label: 'Profile' },
+    { id: 'password', icon: Lock,       label: 'Password' },
+    { id: 'signups',  icon: UserCheck,  label: 'Pending Signups' },
+    ...(isOwner ? [{ id: 'users', icon: Crown, label: 'User Management' }] : []),
+  ]
 
   return (
     <div className="space-y-5">
       {/* Tabs */}
       <div className="card p-1 inline-flex gap-1 flex-wrap">
-        {[
-          { id: 'profile',  icon: User, label: 'Profile' },
-          { id: 'password', icon: Lock, label: 'Password' },
-          { id: 'signups',  icon: UserCheck, label: 'Pending Signups' },
-        ].map(t => (
+        {tabs.map(t => (
           <button key={t.id}
             onClick={() => setTab(t.id)}
             className={`px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-all
@@ -280,6 +287,13 @@ export default function Settings() {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ============== USER MANAGEMENT TAB (Owner only) ============== */}
+      {tab === 'users' && isOwner && (
+        <div className="fade-up">
+          <UserManagement />
         </div>
       )}
     </div>
