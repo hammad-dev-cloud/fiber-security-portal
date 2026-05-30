@@ -1,7 +1,9 @@
-"""Email notification service — supports both Resend API and SMTP.
+"""Email notification service — supports Brevo, Resend, and SMTP.
 
-If RESEND_API_KEY is configured, uses Resend HTTP API (recommended for cloud).
-Otherwise falls back to SMTP (good for local dev).
+Priority order (first available wins):
+  1. Brevo API   (preferred — 300 emails/day free, no domain needed)
+  2. Resend API  (good for verified domains)
+  3. SMTP        (fallback for local dev)
 """
 
 import base64
@@ -19,9 +21,125 @@ from app.config import settings
 # =====================================================================
 # Determine which email backend to use
 # =====================================================================
-def _use_resend() -> bool:
-    """Return True if Resend API should be used (preferred for cloud)."""
-    return bool(settings.RESEND_API_KEY)
+def _which_backend() -> str:
+    """Return the name of the backend that should be used."""
+    if settings.BREVO_API_KEY:
+        return "brevo"
+    if settings.RESEND_API_KEY:
+        return "resend"
+    return "smtp"
+
+
+# =====================================================================
+# BREVO backend (preferred — most permissive free tier)
+# =====================================================================
+async def _send_brevo(recipients, subject, html_body, attachments=None) -> bool:
+    """Send email via Brevo HTTP API."""
+    if not settings.BREVO_API_KEY:
+        print("[email-brevo] BREVO_API_KEY not configured")
+        return False
+
+    from_email = settings.MAIL_FROM or "noreply@example.com"
+    from_name  = settings.MAIL_FROM_NAME or "Fiber Security Portal"
+
+    payload = {
+        "sender":      {"name": from_name, "email": from_email},
+        "to":          [{"email": r} for r in recipients],
+        "subject":     subject,
+        "htmlContent": html_body,
+    }
+
+    # Brevo attachment format
+    if attachments:
+        brevo_attachments = []
+        for att in attachments:
+            file_path = att.get("file")
+            if not file_path or not os.path.exists(file_path):
+                continue
+            with open(file_path, "rb") as f:
+                content_b64 = base64.b64encode(f.read()).decode()
+            headers = att.get("headers", {})
+            disposition = headers.get("Content-Disposition", "")
+            filename = "attachment.pdf"
+            if "filename=" in disposition:
+                filename = disposition.split("filename=")[1].strip('"')
+            brevo_attachments.append({
+                "name":    filename,
+                "content": content_b64,
+            })
+        if brevo_attachments:
+            payload["attachment"] = brevo_attachments
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                "https://api.brevo.com/v3/smtp/email",
+                headers={
+                    "api-key":      settings.BREVO_API_KEY,
+                    "Content-Type": "application/json",
+                    "Accept":       "application/json",
+                },
+                json=payload,
+            )
+        if response.status_code in (200, 201, 202):
+            print(f"[email-brevo] sent to {recipients}: {subject}")
+            return True
+        else:
+            print(f"[email-brevo] failed ({response.status_code}): {response.text}")
+            return False
+    except Exception as exc:
+        print(f"[email-brevo] exception: {exc}")
+        return False
+
+
+# =====================================================================
+# RESEND backend (alternative)
+# =====================================================================
+async def _send_resend(recipients, subject, html_body, attachments=None) -> bool:
+    if not settings.RESEND_API_KEY:
+        return False
+
+    from_field = (
+        f"{settings.MAIL_FROM_NAME} <{settings.MAIL_FROM}>"
+        if settings.MAIL_FROM
+        else f"{settings.MAIL_FROM_NAME} <onboarding@resend.dev>"
+    )
+
+    payload = {"from": from_field, "to": recipients, "subject": subject, "html": html_body}
+
+    if attachments:
+        resend_attachments = []
+        for att in attachments:
+            file_path = att.get("file")
+            if not file_path or not os.path.exists(file_path):
+                continue
+            with open(file_path, "rb") as f:
+                content_b64 = base64.b64encode(f.read()).decode()
+            headers = att.get("headers", {})
+            disposition = headers.get("Content-Disposition", "")
+            filename = "attachment.pdf"
+            if "filename=" in disposition:
+                filename = disposition.split("filename=")[1].strip('"')
+            resend_attachments.append({"filename": filename, "content": content_b64})
+        if resend_attachments:
+            payload["attachments"] = resend_attachments
+
+    try:
+        async with httpx.AsyncClient(timeout=20.0) as client:
+            response = await client.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {settings.RESEND_API_KEY}", "Content-Type": "application/json"},
+                json=payload,
+            )
+        if response.status_code in (200, 201, 202):
+            print(f"[email-resend] sent to {recipients}: {subject}")
+            return True
+        else:
+            print(f"[email-resend] failed ({response.status_code}): {response.text}")
+            return False
+    except Exception as exc:
+        print(f"[email-resend] exception: {exc}")
+        return False
 
 
 # =====================================================================
@@ -58,84 +176,20 @@ async def _send_smtp(recipients, subject, html_body, attachments=None) -> bool:
 
 
 # =====================================================================
-# Resend backend (preferred for cloud — HTTP API, no SMTP)
-# =====================================================================
-async def _send_resend(recipients, subject, html_body, attachments=None) -> bool:
-    """Send email via Resend HTTP API. Works on any cloud (no SMTP ports needed)."""
-    if not settings.RESEND_API_KEY:
-        print("[email-resend] RESEND_API_KEY not configured")
-        return False
-
-    # Resend requires a 'from' in format: "Name <email@domain>"
-    from_field = (
-        f"{settings.MAIL_FROM_NAME} <{settings.MAIL_FROM}>"
-        if settings.MAIL_FROM
-        else f"{settings.MAIL_FROM_NAME} <onboarding@resend.dev>"
-    )
-
-    payload = {
-        "from":    from_field,
-        "to":      recipients,
-        "subject": subject,
-        "html":    html_body,
-    }
-
-    # Convert fastapi-mail style attachments to Resend format
-    if attachments:
-        resend_attachments = []
-        for att in attachments:
-            file_path = att.get("file")
-            if not file_path or not os.path.exists(file_path):
-                continue
-            with open(file_path, "rb") as f:
-                content_b64 = base64.b64encode(f.read()).decode()
-            # Extract filename from headers if present
-            headers = att.get("headers", {})
-            disposition = headers.get("Content-Disposition", "")
-            filename = "attachment.pdf"
-            if "filename=" in disposition:
-                filename = disposition.split("filename=")[1].strip('"')
-            resend_attachments.append({
-                "filename": filename,
-                "content":  content_b64,
-            })
-        if resend_attachments:
-            payload["attachments"] = resend_attachments
-
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as client:
-            response = await client.post(
-                "https://api.resend.com/emails",
-                headers={
-                    "Authorization": f"Bearer {settings.RESEND_API_KEY}",
-                    "Content-Type":  "application/json",
-                },
-                json=payload,
-            )
-        if response.status_code in (200, 201, 202):
-            print(f"[email-resend] sent to {recipients}: {subject}")
-            return True
-        else:
-            print(f"[email-resend] failed ({response.status_code}): {response.text}")
-            return False
-    except Exception as exc:
-        print(f"[email-resend] exception: {exc}")
-        return False
-
-
-# =====================================================================
-# Unified send function — chooses backend automatically
+# Unified send function — auto-chooses backend
 # =====================================================================
 async def send_email(recipients: List[EmailStr], subject: str,
                      html_body: str, attachments: Optional[List[dict]] = None) -> bool:
-    """Main send function — uses Resend if configured, else SMTP."""
-    if _use_resend():
+    backend = _which_backend()
+    if backend == "brevo":
+        return await _send_brevo(recipients, subject, html_body, attachments)
+    elif backend == "resend":
         return await _send_resend(recipients, subject, html_body, attachments)
     return await _send_smtp(recipients, subject, html_body, attachments)
 
 
 # =====================================================================
-# Email templates (unchanged from before)
+# Email templates
 # =====================================================================
 _BASE_CSS = "font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f4f6fa; padding: 32px;"
 _CARD_CSS = "max-width: 560px; margin: 0 auto; background: #ffffff; border-radius: 14px; padding: 32px; border: 1px solid #e5e7eb; box-shadow: 0 6px 24px rgba(15,23,42,0.05);"
@@ -159,7 +213,7 @@ def _wrap(title, body_html, accent="#0ea5e9"):
 
 
 # =====================================================================
-# Email sender functions
+# All email sender functions (unchanged)
 # =====================================================================
 async def send_package_expiry_notice(to, customer_name, days_left):
     body = f"""
@@ -271,8 +325,7 @@ async def send_signup_received_email(to, full_name):
     body = f"""
       <p>Dear <strong>{full_name}</strong>,</p>
       <p>Thank you for signing up for the Fiber Security Portal.</p>
-      <p>We have received your account application and it is currently <strong>pending admin approval</strong>.
-      You will receive another email once your account has been reviewed.</p>
+      <p>We have received your account application and it is currently <strong>pending admin approval</strong>.</p>
       <p>Thank you for your patience.</p>
     """
     return await send_email([to], "Signup received — pending approval", _wrap("Signup Application Received", body, "#0ea5e9"))
@@ -301,6 +354,5 @@ async def send_signup_rejected_email(to, full_name):
       <p>Dear <strong>{full_name}</strong>,</p>
       <p>Thank you for your interest in the Fiber Security Portal.</p>
       <p>Unfortunately, we are unable to approve your account application at this time.</p>
-      <p>If you believe this was an error, or you would like more information, please contact our support team.</p>
     """
     return await send_email([to], "Signup application — update", _wrap("Account Application Update", body, "#ef4444"))
