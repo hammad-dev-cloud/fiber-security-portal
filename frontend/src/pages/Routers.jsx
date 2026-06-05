@@ -57,6 +57,25 @@ export default function Routers() {
     setOpenModal(true)
   }
 
+  // NEW — Auto-fill IP & MAC when customer is selected
+  const onCustomerChange = (customerId) => {
+    if (!customerId) {
+      // "None" selected — clear customer but keep other fields
+      setForm({ ...form, customer_id: '' })
+      return
+    }
+    const selectedCustomer = customers.find((c) => c.id === Number(customerId))
+    if (selectedCustomer) {
+      setForm({
+        ...form,
+        customer_id: customerId,
+        ip_address:  selectedCustomer.ip_address  || form.ip_address,
+        mac_address: selectedCustomer.mac_address || form.mac_address,
+      })
+      toast.success(`Auto-filled IP & MAC from ${selectedCustomer.full_name}`, { duration: 2000 })
+    }
+  }
+
   const onSubmit = async (e) => {
     e.preventDefault()
     setSaving(true)
@@ -144,22 +163,25 @@ export default function Routers() {
             <label className="input-label">Router name</label>
             <input className="input" value={form.router_name} onChange={(e) => setForm({ ...form, router_name: e.target.value })} />
           </div>
+
+          {/* MOVED UP — Linked customer is now FIRST so IP & MAC get auto-filled */}
+          <div className="md:col-span-2"><label className="input-label">Linked customer (auto-fills IP &amp; MAC)</label>
+            <select className="input" value={form.customer_id} onChange={(e) => onCustomerChange(e.target.value)}>
+              <option value="">— None —</option>
+              {customers.map((c) => <option key={c.id} value={c.id}>{c.full_name}</option>)}
+            </select>
+          </div>
+
           <div><label className="input-label">IP address *</label>
             <input required className="input font-mono" placeholder="192.168.10.100" value={form.ip_address} onChange={(e) => setForm({ ...form, ip_address: e.target.value })} />
           </div>
           <div><label className="input-label">MAC address</label>
             <input className="input font-mono" placeholder="AA:BB:CC:DD:EE:FF" value={form.mac_address} onChange={(e) => setForm({ ...form, mac_address: e.target.value })} />
           </div>
-          <div><label className="input-label">Linked customer</label>
-            <select className="input" value={form.customer_id} onChange={(e) => setForm({ ...form, customer_id: e.target.value })}>
-              <option value="">— None —</option>
-              {customers.map((c) => <option key={c.id} value={c.id}>{c.full_name}</option>)}
-            </select>
-          </div>
           <div><label className="input-label">Model</label>
             <input className="input" value={form.model} onChange={(e) => setForm({ ...form, model: e.target.value })} />
           </div>
-          <div className="md:col-span-2"><label className="input-label">Location</label>
+          <div><label className="input-label">Location</label>
             <input className="input" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} />
           </div>
           <div className="md:col-span-2 flex justify-end gap-2 pt-2">

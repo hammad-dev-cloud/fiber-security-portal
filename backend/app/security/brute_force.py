@@ -2,9 +2,10 @@
 
 Counts failed login attempts per source IP inside a sliding window stored in
 the database. After N failures the IP is considered locked-out and a high-
-severity alert is generated.
+severity alert is generated. Email notifications are sent to all admins.
 """
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -62,12 +63,17 @@ def is_ip_locked(source_ip: str) -> bool:
 
 
 def raise_brute_force_alert(source_ip: str, attempts: int, username: Optional[str] = None) -> None:
-    """Insert a high-severity alert in the security_alerts table."""
+    """Insert a high-severity alert in the security_alerts table.
+
+    Also sends email notification to all active admin users.
+    """
     message = (
         f"Brute-force attempt detected from {source_ip} — "
         f"{attempts} failed login attempts in the last "
         f"{settings.BRUTE_FORCE_WINDOW_SECONDS // 60} minutes."
     )
+
+    # Step 1: Insert alert into database
     try:
         supabase.table("security_alerts").insert({
             "alert_type": "brute_force",
@@ -79,3 +85,71 @@ def raise_brute_force_alert(source_ip: str, attempts: int, username: Optional[st
         }).execute()
     except Exception as exc:
         print(f"[brute_force] alert insert failed: {exc}")
+
+    # Step 2: NEW — Send email notification to all active admins
+    try:
+        _send_brute_force_emails(source_ip, attempts, username, message)
+    except Exception as exc:
+        print(f"[brute_force] email notification failed: {exc}")
+
+
+def _send_brute_force_emails(source_ip: str, attempts: int,
+                              username: Optional[str], message: str) -> None:
+    """Send security alert email to all active admins."""
+    # Fetch all active admins with emails
+    try:
+        admins = (
+            supabase.table("admin_users")
+            .select("email, full_name")
+            .eq("is_active", True)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:
+        print(f"[brute_force] could not fetch admins: {exc}")
+        return
+
+    if not admins:
+        print("[brute_force] no active admins to notify")
+        return
+
+    # Import here to avoid circular imports
+    from app.services.email_service import send_security_alert
+
+    detail_message = (
+        f"{message}\n\n"
+        f"Attempted Username: {username or 'Unknown'}\n"
+        f"Source IP: {source_ip}\n"
+        f"Failed Attempts: {attempts}\n"
+        f"The IP has been automatically locked for "
+        f"{settings.BRUTE_FORCE_LOCKOUT_SECONDS // 60} minutes."
+    )
+
+    for admin in admins:
+        admin_email = admin.get("email")
+        if not admin_email:
+            continue
+        try:
+            # Run the async email function
+            asyncio.run(send_security_alert(
+                to=admin_email,
+                alert_type="Brute Force Attack",
+                message=detail_message,
+                severity="high",
+            ))
+        except RuntimeError:
+            # If event loop is already running, use a different approach
+            try:
+                loop = asyncio.new_event_loop()
+                loop.run_until_complete(send_security_alert(
+                    to=admin_email,
+                    alert_type="Brute Force Attack",
+                    message=detail_message,
+                    severity="high",
+                ))
+                loop.close()
+            except Exception as exc:
+                print(f"[brute_force] email to {admin_email} failed: {exc}")
+        except Exception as exc:
+            print(f"[brute_force] email to {admin_email} failed: {exc}")
