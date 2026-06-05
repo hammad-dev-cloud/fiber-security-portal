@@ -1,42 +1,68 @@
-"""Router connectivity monitor — uses ping3.
+"""Router connectivity monitor — uses TCP socket-based reachability check.
 
-For each router in the database we send an ICMP echo and update its status
-(online / offline) plus latency. When a router flips from online → offline
+For each router in the database we attempt a TCP connection to check
+reachability and measure latency. When a router flips from online → offline
 we generate a 'router_down' security alert.
 
-NOTE: ICMP requires admin/root privileges on most systems. Run the backend
-as administrator on Windows or with sudo on Linux for ping3 to work.
+NOTE: We use TCP socket check instead of ICMP ping because:
+  - Cloud platforms (HF Spaces, AWS, GCP, Azure) block outbound ICMP
+  - TCP works through firewalls and NAT
+  - No root/admin privileges required
+  - Industry standard for cloud monitoring
 """
 
+import socket
+import time
 from datetime import datetime, timezone
 from typing import Optional
-
-import ping3
 
 from app.config import settings
 from app.database import supabase
 
-# ping3 prints warnings by default — silence them; we handle return values.
-ping3.EXCEPTIONS = False
+# Common router/service ports to check — TCP connect to ANY of these = online
+ROUTER_PORTS = [80, 443, 22, 8080, 23, 53]
 
 
 def ping_host(host: str, timeout: Optional[float] = None) -> Optional[float]:
-    """Return latency in ms, or None if host is unreachable / on permission error."""
+    """Return latency in ms, or None if host is unreachable.
+
+    Tries multiple common ports. Returns latency of the first successful connection.
+    For localhost (127.0.0.x), it's always considered reachable.
+    """
     if not host:
         return None
     timeout = timeout or settings.ROUTER_PING_TIMEOUT_SECONDS
-    try:
-        result = ping3.ping(host, timeout=timeout, unit="ms")
-        if result is False or result is None:
-            return None
-        return round(float(result), 2)
-    except (PermissionError, OSError) as exc:
-        # On Windows non-admin shells ping3 raises OSError. Don't crash.
-        print(f"[router_monitor] ping permission/OS error for {host}: {exc}")
+
+    # Special case: localhost is always reachable (demo / loopback)
+    if host.startswith("127.") or host == "localhost":
+        return 0.5  # fixed minimal latency for localhost
+
+    # Validate IP format roughly (avoid socket errors on garbage input)
+    parts = host.split(".")
+    if len(parts) != 4 or not all(p.isdigit() and 0 <= int(p) <= 255 for p in parts):
+        print(f"[router_monitor] invalid IP format: {host}")
         return None
-    except Exception as exc:
-        print(f"[router_monitor] ping failed for {host}: {exc}")
-        return None
+
+    # Try each port — first one that responds = online
+    for port in ROUTER_PORTS:
+        try:
+            start = time.time()
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.settimeout(timeout)
+                result = sock.connect_ex((host, port))
+                if result == 0:
+                    # Connection successful — host is online
+                    latency_ms = (time.time() - start) * 1000
+                    return round(latency_ms, 2)
+        except (socket.timeout, socket.gaierror, OSError):
+            # Try next port
+            continue
+        except Exception as exc:
+            print(f"[router_monitor] unexpected error pinging {host}:{port} → {exc}")
+            continue
+
+    # All ports failed — host unreachable
+    return None
 
 
 def check_router(router_id: int) -> dict:
@@ -62,11 +88,14 @@ def check_router(router_id: int) -> dict:
     supabase.table("routers").update(update).eq("id", router_id).execute()
 
     # Log status transition
-    supabase.table("router_status_logs").insert({
-        "router_id": router_id,
-        "status":    new_status,
-        "ping_ms":   int(latency) if latency is not None else None,
-    }).execute()
+    try:
+        supabase.table("router_status_logs").insert({
+            "router_id": router_id,
+            "status":    new_status,
+            "ping_ms":   int(latency) if latency is not None else None,
+        }).execute()
+    except Exception as exc:
+        print(f"[router_monitor] status log failed: {exc}")
 
     # Raise an alert if the router just went down
     if previous_status == "online" and new_status == "offline":
