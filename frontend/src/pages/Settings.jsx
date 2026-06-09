@@ -118,7 +118,7 @@ export default function Settings() {
   const decideSignup = async (userId, approve) => {
     setBusyUserId(userId)
     try {
-      await api.post(`/auth/pending-signups/${userId}/action`, { action: approve ? 'approve' : 'reject' })
+     await api.post(`/auth/pending-signups/${userId}/action`, { approve: approve })
       toast.success(approve ? 'Application approved' : 'Application rejected')
       loadSignups()
     } catch (err) { toast.error(getErrorMsg(err)) }
