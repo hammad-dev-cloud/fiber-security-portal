@@ -6,6 +6,15 @@ import { useAuth } from '../context/AuthContext'
 import Loader from '../components/Loader'
 import UserManagement from '../components/UserManagement'
 
+// Helper: extract clean error message from any API error
+const getErrorMsg = (err) => {
+  const detail = err?.response?.data?.detail
+  if (typeof detail === 'string') return detail
+  if (Array.isArray(detail)) return detail[0]?.msg || 'Validation error'
+  if (detail?.msg) return detail.msg
+  return err?.message || 'Operation failed'
+}
+
 export default function Settings() {
   const { user: ctxUser, updateLocalUser, logout } = useAuth()
   const [tab, setTab] = useState('profile')   // profile | password | signups | users
@@ -40,7 +49,7 @@ export default function Settings() {
           phone:     me.phone     || '',
         })
         setIsOwner(!!me.is_owner)
-      } catch (err) { toast.error(err.message) }
+      } catch (err) { toast.error(getErrorMsg(err)) }
       finally { setProfileLoading(false) }
     })()
   }, [])
@@ -57,7 +66,7 @@ export default function Settings() {
     try {
       const data = await api.get('/auth/pending-signups').then(r => r.data)
       setSignups(data)
-    } catch (err) { toast.error(err.message) }
+    } catch (err) { toast.error(getErrorMsg(err)) }
     finally { setSignupsLoading(false) }
   }
 
@@ -82,7 +91,7 @@ export default function Settings() {
         toast('Username changed — please sign in again', { icon: 'ℹ️', duration: 4000 })
         setTimeout(() => logout('silent'), 2000)
       }
-    } catch (err) { toast.error(err.response?.data?.detail || err.message) }
+    } catch (err) { toast.error(getErrorMsg(err)) }
     finally { setSavingProfile(false) }
   }
 
@@ -102,7 +111,7 @@ export default function Settings() {
       })
       toast.success('Password changed successfully')
       setPwd({ current_password: '', new_password: '', confirm_password: '' })
-    } catch (err) { toast.error(err.response?.data?.detail || err.message) }
+    } catch (err) { toast.error(getErrorMsg(err)) }
     finally { setSavingPwd(false) }
   }
 
@@ -112,7 +121,7 @@ export default function Settings() {
       await api.post(`/auth/pending-signups/${userId}/action`, { action: approve ? 'approve' : 'reject' })
       toast.success(approve ? 'Application approved' : 'Application rejected')
       loadSignups()
-    } catch (err) { toast.error(err.response?.data?.detail || err.message) }
+    } catch (err) { toast.error(getErrorMsg(err)) }
     finally { setBusyUserId(null) }
   }
 
