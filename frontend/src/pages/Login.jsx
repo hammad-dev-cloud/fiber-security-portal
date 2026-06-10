@@ -5,8 +5,8 @@ import toast from 'react-hot-toast'
 
 export default function Login() {
   const { login } = useAuth()
-  const [username, setUsername] = useState('admin')
-  const [password, setPassword] = useState('Admin@123')
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [showPwd, setShowPwd]   = useState(false)
   const [loading, setLoading]   = useState(false)
 
@@ -27,18 +27,14 @@ export default function Login() {
     <div className="min-h-screen grid lg:grid-cols-5">
       {/* ===== Left — branded panel ===== */}
       <div className="hidden lg:flex lg:col-span-3 relative overflow-hidden bg-gradient-to-br from-ink-950 via-ink-900 to-ink-950">
-        {/* Background grid */}
         <div className="absolute inset-0 grid-overlay opacity-50" />
-        {/* Aurora */}
         <div className="absolute inset-0 bg-aurora" />
 
-        {/* Decorative network rings */}
         <div className="absolute -bottom-40 -left-40 w-[600px] h-[600px] rounded-full border border-cyan-500/10" />
         <div className="absolute -bottom-32 -left-32 w-[480px] h-[480px] rounded-full border border-cyan-500/15" />
         <div className="absolute -bottom-20 -left-20 w-[320px] h-[320px] rounded-full border border-accent/20" />
 
         <div className="relative z-10 flex flex-col justify-between p-12 w-full">
-          {/* Brand */}
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-cyan-500 to-accent flex items-center justify-center shadow-glow-cyan">
               <Lock className="w-5 h-5 text-ink-950" strokeWidth={2.5} />
@@ -49,7 +45,6 @@ export default function Login() {
             </div>
           </div>
 
-          {/* Hero text */}
           <div className="max-w-xl">
             <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-accent/10 border border-accent/20 text-accent text-xs font-mono mb-5">
               <span className="glow-dot bg-accent" /> SECURE • MONITORED • REAL-TIME
@@ -62,7 +57,6 @@ export default function Login() {
             </p>
           </div>
 
-          {/* Feature stripe */}
           <div className="grid grid-cols-3 gap-3">
             {[
               { icon: ShieldCheck, label: 'Intrusion Detection', value: 'IDS + Brute-force' },
@@ -82,7 +76,6 @@ export default function Login() {
       {/* ===== Right — form ===== */}
       <div className="lg:col-span-2 flex items-center justify-center p-6 sm:p-10 bg-ink-950">
         <div className="w-full max-w-md fade-up">
-          {/* Mobile brand */}
           <div className="lg:hidden flex items-center gap-3 mb-8">
             <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-cyan-500 to-accent flex items-center justify-center">
               <Lock className="w-5 h-5 text-ink-950" strokeWidth={2.5} />
@@ -102,7 +95,7 @@ export default function Login() {
                 autoComplete="username"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="admin"
+                placeholder="Enter your username"
                 required
                 className="input"
               />
