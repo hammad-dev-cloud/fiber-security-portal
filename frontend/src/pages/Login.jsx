@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { Eye, EyeOff, Lock, ShieldCheck, Activity, Radio } from 'lucide-react'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
@@ -102,7 +103,12 @@ export default function Login() {
             </div>
 
             <div>
-              <label className="input-label" htmlFor="password">Password</label>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="input-label !mb-0" htmlFor="password">Password</label>
+                <Link to="/forgot-password" className="text-xs text-accent hover:text-accent-dark font-semibold transition-colors">
+                  Forgot password?
+                </Link>
+              </div>
               <div className="relative">
                 <input
                   id="password"
@@ -129,6 +135,26 @@ export default function Login() {
               {loading ? 'Signing in...' : 'Sign in'}
             </button>
           </form>
+
+          {/* Forgot username link */}
+          <p className="mt-4 text-center text-xs text-ink-400">
+            Forgot your username?{' '}
+            <Link to="/forgot-username" className="text-accent hover:text-accent-dark font-semibold">
+              Recover it
+            </Link>
+          </p>
+
+          {/* Divider */}
+          <div className="my-6 flex items-center gap-3">
+            <div className="flex-1 h-px bg-white/[0.06]" />
+            <span className="text-[11px] uppercase tracking-widest text-ink-400">or</span>
+            <div className="flex-1 h-px bg-white/[0.06]" />
+          </div>
+
+          {/* Sign up CTA */}
+          <Link to="/signup" className="btn-secondary w-full py-2.5 justify-center">
+            Apply for a partner account
+          </Link>
 
           <p className="mt-8 text-center text-xs text-ink-400">
             © {new Date().getFullYear()} Fiber Security Portal
